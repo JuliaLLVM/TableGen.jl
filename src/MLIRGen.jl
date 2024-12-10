@@ -127,57 +127,37 @@ function argtype(ctx::Ctx, basetype, def::Def)
     return T
 end
 
-splatted_arg(ctx::Ctx, name::Symbol, def::Def) = isvariadic(ctx, def) ? Expr(:(...), name) : name
+arg_expr(ctx::Ctx, def, basetype) = isoptional(ctx, def) ?
+                arg_expr(argname(def), argtype(ctx, basetype, def), nothing) :
+                arg_expr(argname(def), argtype(ctx, basetype, def))
+arg_expr(name, type, default) = Expr(:kw, arg_expr(name, type), :($default))
+arg_expr(name, type) = Expr(:(::), name, type)
 
-optional_push(ctx::Ctx, target, name::Symbol) = :(!isnothing($name) && push!($target, $name))
-
-function arg_exprs(ctx, defs::Vector{Def}, basetype)
-    arglist = []
-    typelist = []
-    for def in defs
-        if def isa UnnamedDef
-            name = "?" # TODO: generate a name
-        else
-            name = def.name
-        end
-
-        T = basetype
-        if isvariadic(ctx, def)
-            T = Vector{T}
-        end
-        if isoptional(ctx, def)
-            T = Union{T, Nothing}
-        end
-
-        push!(arglist, Symbol(name))
-        push!(typelist, T)
-    end
-    return arglist, typelist
+"""
+Return the expression of a list containing the names of all non-optional defs.
+"""
+function nonoptional_expr(ctx, defs, basetype)
+    return :($basetype[$([argname(def) for def in defs if !isoptional(ctx, def)]...)])
 end
 
-typed_list(names, types) = Expr.(:(::), names, types)
+function optional_push_exprs(ctx::Ctx, defs, pushdest::Symbol)
+    exprs = []
+    for def in defs
+        !isoptional(ctx, def) && continue
+        
+        defname = argname(def)
+        expr = :(!isnothing($defname) && push!($pushdest, $(defname)))
+        push!(exprs, expr)
+    end
+    return exprs
+end
 
 function generate_op(ctx::Ctx, op::Operation)
     # TODO: 
-    # * [ ] optional operands should default to nothing
+    # * [x] optional operands should default to nothing
     # * [ ] result inference...
     
     name = Symbol(op.name)
-
-    operandnames = argname.(op.operands)
-    operandtypes = argtype.(Ref(ctx), Ref(Value), op.operands)
-
-    resultnames = argname.(op.results)
-    resulttypes = argtype.(Ref(ctx), Ref(MType), op.results)
-
-    regionnames = argname.(op.regions)
-    regiontypes = argtype.(Ref(ctx), Ref(Region), op.regions)
-
-    attrnames = argname.(op.attributes)
-    attrtypes = argtype.(Ref(ctx), Ref(Attribute), op.attributes)
-
-    successornames = argname.(op.successors)
-    successortypes = argtype.(Ref(ctx), Ref(Block), op.successors)
 
     location = gensym(:location)
     
@@ -187,31 +167,26 @@ function generate_op(ctx::Ctx, op::Operation)
     attributes = gensym(:attributes)
     successors = gensym(:successors)
 
-    push_stmts = []
-    for (target, defs) in ((operands, op.operands), (results, op.results), (regions, op.regions), (attributes, op.attributes), (successors, op.attributes))
-        for def in defs
-            if isoptional(ctx, def)
-                push!(push_stmts, optional_push(ctx, target, argname(def)))
-            end
-        end
-    end
-
     return quote
         function $name(
-                    $(typed_list(operandnames, operandtypes)...);
-                    $(typed_list(resultnames, resulttypes)...),
-                    $(typed_list(attrnames, attrtypes)...),
-                    $(typed_list(regionnames, regiontypes)...),
+                    $(arg_expr.(Ref(ctx), op.operands, Ref(Value))...);
+                    $(arg_expr.(Ref(ctx), op.results, Ref(MType))...),
+                    $(arg_expr.(Ref(ctx), op.attributes, Ref(Attribute))...),
+                    $(arg_expr.(Ref(ctx), op.regions, Ref(Region))...),
                  )
 
-            $(operands) = $(Value)[$(operandnames...)]
-            $(results) = $(MType)[$(resultnames...)]
-            $(regions) = $(Region)[$(regionnames...)]
-            $(attributes) = $(Attribute)[$(attrnames...)]
-            $(successors) = $(Block)[$(successornames...)]
+            $(operands) = $(nonoptional_expr(ctx, op.operands, Value))
+            $(results) = $(nonoptional_expr(ctx, op.results, MType))
+            $(regions) = $(nonoptional_expr(ctx, op.regions, Region))
+            $(attributes) = $(nonoptional_expr(ctx, op.attributes, Attribute))
+            $(successors) = $(nonoptional_expr(ctx, op.successors, Attribute))
 
-            $(push_stmts...)
-
+            $(optional_push_exprs(ctx, op.operands, operands)...)
+            $(optional_push_exprs(ctx, op.results, results)...)
+            $(optional_push_exprs(ctx, op.regions, regions)...)
+            $(optional_push_exprs(ctx, op.attributes, attributes)...)
+            $(optional_push_exprs(ctx, op.successors, successors)...)
+            
             return $(create_op_placeholder)(
                 $("$(dialectname(ctx, op)).$(op.name)"),
                 location=$location;

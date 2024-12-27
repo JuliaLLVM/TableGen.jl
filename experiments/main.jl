@@ -1,4 +1,4 @@
-using LLVM_full_jll, Tablegen, JSON3
+using LLVM_full_jll, Tablegen, JSON3, MacroTools
 import Tablegen.MLIRGen: generate_op, Ctx, operations, Operation
 
 includepath = joinpath(LLVM_full_jll.artifact_dir, "include")
@@ -23,6 +23,38 @@ end
 ops = f(ctx)
 
 generate_op(ctx, ops[2])
+
+prettify(generate_op(ctx, ops[2]))
+
+function g()
+    finaltraits = Set()
+    traitdefs = map(result.GPU_BlockDimOp.traits) do x
+        x.def
+    end
+    # traitdefs = ["InferIntRangeInterface"]
+    while !isempty(traitdefs)
+        def = pop!(traitdefs)
+        trait = result[def]
+        push!(finaltraits, trait)
+        print(def)
+        if haskey(trait, "trait")
+            println("\t($(trait.trait))")
+        else
+            println()
+        end
+        if haskey(trait, "traits")
+            for newtrait in trait.traits
+                push!(traitdefs, newtrait.def)
+            end
+        end
+    end
+    return finaltraits
+end
+
+test = g()
+
+collect(test)
+
 
 eval(generate_op(ctx, ops[2]))
 
